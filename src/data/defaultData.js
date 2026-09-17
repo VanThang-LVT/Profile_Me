@@ -36,7 +36,7 @@ export const initialTranscriptData = {
       "letter": "A",
       "semester": "Học kỳ 2 - Năm học 2025 - 2026"
     },
-    {
+    { 
       "id": "subj-1",
       "code": "CS03043",
       "name": "Xây dựng phần mềm Web",
