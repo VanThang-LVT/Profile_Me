@@ -7,7 +7,7 @@ export const initialProfileInfo = {
   phone: "0372036292",
   location: "TP. Hồ Chí Minh, Việt Nam",
   avatar: "/avatar.png",
-  bio: "Đam mê xây dựng các giải pháp web hiện đại, tối ưu trải nghiệm người dùng và phát triển phần mềm chất lượng cao. Thích nghiên cứu các công nghệ mới và phân tích dữ liệu ứng dụng.",
+  bio: "Sinh viên vừa hoàn thành chương trình học ngành Công nghệ Thông tin, có kiến thức cơ bản về Java, React.js và MySQL. Đã từng thực hành xây dựng các dự án web nhỏ trong quá trình học. Mong muốn ứng tuyển vị trí Software Engineer Intern để rèn luyện kỹ năng lập trình thực tế, tích lũy kinh nghiệm làm việc chuyên nghiệp và sẵn sàng học hỏi các công nghệ mới theo yêu cầu của công ty.",
   github: "https://github.com/VanThang-LVT",
   linkedin: "https://linkedin.com",
   facebook: "https://www.facebook.com/vanthang.luong.560",
