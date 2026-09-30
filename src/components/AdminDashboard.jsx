@@ -284,13 +284,17 @@ CREATE TABLE IF NOT EXISTS public.${STORE_TABLE} (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 2. Cho phép truy cập công khai bảng dữ liệu:
+-- 2. Tắt RLS cho bảng dữ liệu:
 ALTER TABLE public.${STORE_TABLE} DISABLE ROW LEVEL SECURITY;
 
--- 3. Cấp quyền upload/tải file công khai cho Storage Bucket '${BUCKET_NAME}':
+-- 3. Xóa chính sách cũ nếu có & Cấp quyền upload/xem file công khai cho Storage Bucket '${BUCKET_NAME}':
+DROP POLICY IF EXISTS "Allow Public Select" ON storage.objects;
+DROP POLICY IF EXISTS "Allow Public Insert" ON storage.objects;
+DROP POLICY IF EXISTS "Allow Public Update" ON storage.objects;
+
+CREATE POLICY "Allow Public Select" ON storage.objects FOR SELECT USING (bucket_id = '${BUCKET_NAME}');
 CREATE POLICY "Allow Public Insert" ON storage.objects FOR INSERT WITH CHECK (bucket_id = '${BUCKET_NAME}');
-CREATE POLICY "Allow Public Update" ON storage.objects FOR UPDATE USING (bucket_id = '${BUCKET_NAME}');
-CREATE POLICY "Allow Public Select" ON storage.objects FOR SELECT USING (bucket_id = '${BUCKET_NAME}');`;
+CREATE POLICY "Allow Public Update" ON storage.objects FOR UPDATE USING (bucket_id = '${BUCKET_NAME}');`;
 
   const copySqlScript = () => {
     navigator.clipboard.writeText(sqlScript);
