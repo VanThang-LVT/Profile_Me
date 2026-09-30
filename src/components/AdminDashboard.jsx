@@ -1,12 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Shield, FileText, UploadCloud, FileSpreadsheet, CheckCircle2, 
-  AlertCircle, X, Download, Lock, RefreshCw, Trash2, User, KeyRound, LogOut 
+  AlertCircle, X, Download, Trash2, User, KeyRound, LogOut, Cloud, Copy, Check, ExternalLink, RefreshCw
 } from 'lucide-react';
 import { saveCvPdf, clearCvPdf, saveTranscriptData, saveProfileInfo } from '../utils/storage';
 import { parseTranscriptExcel, generateExcelTemplate } from '../utils/excelParser';
 import { setAdminPassword } from '../utils/auth';
 import { initialTranscriptData } from '../data/defaultData';
+import { 
+  getSupabaseConfig, saveSupabaseConfig, clearSupabaseConfig, 
+  testSupabaseConnection, isSupabaseConfigured, uploadCloudFile, 
+  saveCloudDataKey, STORE_TABLE, BUCKET_NAME 
+} from '../utils/supabaseClient';
 
 export const AdminDashboard = ({ 
   isOpen, 
@@ -19,28 +24,72 @@ export const AdminDashboard = ({
   setProfile, 
   onLogout 
 }) => {
-  const [activeTab, setActiveTab] = useState('cv'); // 'cv' | 'excel' | 'profile' | 'security'
+  const [activeTab, setActiveTab] = useState('cv'); // 'cv' | 'excel' | 'profile' | 'cloud' | 'security'
   const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
 
   // PDF CV Upload state
-  const [pdfFile, setPdfFile] = useState(null);
   const [isUploadingPdf, setIsUploadingPdf] = useState(false);
 
   // Excel Upload state
   const [parsedPreview, setParsedPreview] = useState(null);
   const [excelError, setExcelError] = useState('');
+  const [isSavingExcel, setIsSavingExcel] = useState(false);
 
   // Password change state
   const [newPassword, setNewPassword] = useState('');
 
   // Profile Edit Form state
   const [profileForm, setProfileForm] = useState(profile);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isUploadingImg, setIsUploadingImg] = useState(false);
+
+  // Supabase Cloud Config State
+  const [cloudConfig, setCloudConfig] = useState(() => getSupabaseConfig());
+  const [testingCloud, setTestingCloud] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+
+  useEffect(() => {
+    setProfileForm(profile);
+  }, [profile]);
+
+  // Image upload handler (Avatar & Cover Image)
+  const handleImageUpload = async (file, fieldKey) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('error', 'Vui lòng chọn file định dạng hình ảnh (.jpg, .png, .jpeg, .webp).');
+      return;
+    }
+    try {
+      setIsUploadingImg(true);
+      if (isSupabaseConfigured()) {
+        const fileName = `${fieldKey}_${Date.now()}_${file.name}`;
+        const res = await uploadCloudFile(file, fileName);
+        if (res.success && res.fileMeta) {
+          setProfileForm(prev => ({ ...prev, [fieldKey]: res.fileMeta.dataUrl }));
+          showToast('success', `Đã tải ${fieldKey === 'avatar' ? 'Ảnh đại diện' : 'Ảnh bìa'} lên Cloud Storage thành công!`);
+        } else {
+          showToast('error', `Lỗi tải ảnh: ${res.message}`);
+        }
+      } else {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          setProfileForm(prev => ({ ...prev, [fieldKey]: e.target.result }));
+          showToast('success', `Đã chọn ảnh! (Hãy bật Cloud Storage để đồng bộ cho các thiết bị khác).`);
+        };
+        reader.readAsDataURL(file);
+      }
+    } catch (err) {
+      showToast('error', 'Lỗi khi xử lý hình ảnh: ' + err.message);
+    } finally {
+      setIsUploadingImg(false);
+    }
+  };
 
   if (!isOpen) return null;
 
   const showToast = (type, text) => {
     setStatusMsg({ type, text });
-    setTimeout(() => setStatusMsg({ type: '', text: '' }), 4000);
+    setTimeout(() => setStatusMsg({ type: '', text: '' }), 5000);
   };
 
   // Handle PDF File Upload
@@ -52,9 +101,25 @@ export const AdminDashboard = ({
     }
     try {
       setIsUploadingPdf(true);
-      const meta = await saveCvPdf(file);
-      setCvMeta(meta);
-      showToast('success', `Đã lưu file CV PDF "${file.name}" thành công!`);
+
+      // Check if Cloud Storage is configured
+      if (isSupabaseConfigured()) {
+        const res = await uploadCloudFile(file, 'CV.pdf');
+        if (res.success && res.fileMeta) {
+          setCvMeta(res.fileMeta);
+          showToast('success', `Đã tải file CV "${file.name}" lên Cloud Storage (Supabase) thành công! Tất cả thiết bị đều sẽ thấy file này.`);
+        } else {
+          // Fallback to local save if cloud fails
+          const localMeta = await saveCvPdf(file);
+          setCvMeta(localMeta);
+          showToast('error', `Lỗi tải lên Cloud Storage: ${res.message}. File đã được lưu tạm vào máy này.`);
+        }
+      } else {
+        // Local storage fallback
+        const meta = await saveCvPdf(file);
+        setCvMeta(meta);
+        showToast('success', `Đã lưu file CV "${file.name}" vào bộ nhớ máy này. ⚠️ Hãy cấu hình tab Cloud Storage để đồng bộ cho tất cả các thiết bị khác!`);
+      }
     } catch (err) {
       showToast('error', 'Lỗi khi lưu file PDF: ' + err.message);
     } finally {
@@ -63,9 +128,12 @@ export const AdminDashboard = ({
   };
 
   // Handle Clear CV PDF
-  const handleClearPdf = () => {
+  const handleClearPdf = async () => {
     if (window.confirm('Bạn có chắc chắn muốn xóa file PDF CV hiện tại không?')) {
       clearCvPdf();
+      if (isSupabaseConfigured()) {
+        await saveCloudDataKey('cv_pdf', null);
+      }
       setCvMeta(null);
       showToast('success', 'Đã xóa file PDF CV, hệ thống đã chuyển về mẫu Web CV.');
     }
@@ -89,19 +157,42 @@ export const AdminDashboard = ({
   };
 
   // Save Excel Parsed Data
-  const handleSaveExcelData = () => {
-    if (parsedPreview) {
+  const handleSaveExcelData = async () => {
+    if (!parsedPreview) return;
+    try {
+      setIsSavingExcel(true);
+      
+      // Save locally
       saveTranscriptData(parsedPreview);
       setTranscriptData(parsedPreview);
+
+      // Save to Cloud if configured
+      if (isSupabaseConfigured()) {
+        const cloudRes = await saveCloudDataKey('transcript_data', parsedPreview);
+        if (cloudRes.success) {
+          showToast('success', 'Đã cập nhật Bảng điểm thành công lên Cloud Storage! Tất cả các thiết bị sẽ thấy Bảng điểm mới này.');
+        } else {
+          showToast('error', `Đã lưu ở máy này nhưng lỗi đồng bộ Cloud: ${cloudRes.message}`);
+        }
+      } else {
+        showToast('success', 'Đã cập nhật Bảng điểm vào trình duyệt này! ⚠️ Hãy bật tab Cloud Storage để tất cả thiết bị khác nhận được dữ liệu.');
+      }
+      
       setParsedPreview(null);
-      showToast('success', 'Đã cập nhật Bảng điểm mới vào trang web thành công!');
+    } catch (err) {
+      showToast('error', 'Lỗi khi lưu bảng điểm: ' + err.message);
+    } finally {
+      setIsSavingExcel(false);
     }
   };
 
   // Clear Transcript Data
-  const handleClearTranscriptData = () => {
+  const handleClearTranscriptData = async () => {
     if (window.confirm('Bạn có chắc chắn muốn xóa dữ liệu bảng điểm hiện tại không?')) {
       localStorage.removeItem('profile_me_transcript_data');
+      if (isSupabaseConfigured()) {
+        await saveCloudDataKey('transcript_data', null);
+      }
       setTranscriptData(initialTranscriptData);
       setParsedPreview(null);
       showToast('success', 'Đã xóa toàn bộ dữ liệu bảng điểm!');
@@ -109,11 +200,28 @@ export const AdminDashboard = ({
   };
 
   // Save Profile Info
-  const handleSaveProfile = (e) => {
+  const handleSaveProfile = async (e) => {
     e.preventDefault();
-    saveProfileInfo(profileForm);
-    setProfile(profileForm);
-    showToast('success', 'Đã cập nhật thông tin cá nhân!');
+    try {
+      setIsSavingProfile(true);
+      saveProfileInfo(profileForm);
+      setProfile(profileForm);
+
+      if (isSupabaseConfigured()) {
+        const res = await saveCloudDataKey('profile_info', profileForm);
+        if (res.success) {
+          showToast('success', 'Đã lưu thông tin Hồ sơ thành công lên Cloud Storage!');
+        } else {
+          showToast('error', `Đã lưu ở máy này nhưng lỗi đồng bộ Cloud: ${res.message}`);
+        }
+      } else {
+        showToast('success', 'Đã cập nhật thông tin cá nhân ở máy này!');
+      }
+    } catch (err) {
+      showToast('error', 'Lỗi khi lưu profile: ' + err.message);
+    } finally {
+      setIsSavingProfile(false);
+    }
   };
 
   // Change Admin Password
@@ -128,6 +236,70 @@ export const AdminDashboard = ({
     }
   };
 
+  // Save Cloud Configuration
+  const handleSaveCloudConfig = async (e) => {
+    e.preventDefault();
+    setTestingCloud(true);
+    const test = await testSupabaseConnection(cloudConfig.url, cloudConfig.key);
+    setTestingCloud(false);
+
+    if (test.success) {
+      saveSupabaseConfig(cloudConfig.url, cloudConfig.key);
+      showToast('success', 'Đã lưu cấu hình Cloud Storage (Supabase) thành công! Trang web hiện tự động kết nối Cloud.');
+    } else if (test.tableMissing) {
+      saveSupabaseConfig(cloudConfig.url, cloudConfig.key);
+      showToast('error', test.message);
+    } else {
+      showToast('error', test.message);
+    }
+  };
+
+  // Test Cloud Connection
+  const handleTestCloudConnection = async () => {
+    setTestingCloud(true);
+    const res = await testSupabaseConnection(cloudConfig.url, cloudConfig.key);
+    setTestingCloud(false);
+
+    if (res.success) {
+      showToast('success', res.message);
+    } else {
+      showToast('error', res.message);
+    }
+  };
+
+  // Clear Cloud Config
+  const handleClearCloudConfig = () => {
+    if (window.confirm('Bạn có chắc chắn muốn ngắt kết nối Cloud Storage không?')) {
+      clearSupabaseConfig();
+      setCloudConfig({ url: '', key: '', isEnv: false });
+      showToast('success', 'Đã ngắt kết nối Cloud Storage.');
+    }
+  };
+
+  // SQL Script text to copy
+  const sqlScript = `-- 1. Tạo bảng lưu dữ liệu Profile & Bảng điểm:
+CREATE TABLE IF NOT EXISTS public.${STORE_TABLE} (
+  key TEXT PRIMARY KEY,
+  value JSONB,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- 2. Cho phép truy cập công khai bảng dữ liệu:
+ALTER TABLE public.${STORE_TABLE} DISABLE ROW LEVEL SECURITY;
+
+-- 3. Cấp quyền upload/tải file công khai cho Storage Bucket '${BUCKET_NAME}':
+CREATE POLICY "Allow Public Insert" ON storage.objects FOR INSERT WITH CHECK (bucket_id = '${BUCKET_NAME}');
+CREATE POLICY "Allow Public Update" ON storage.objects FOR UPDATE USING (bucket_id = '${BUCKET_NAME}');
+CREATE POLICY "Allow Public Select" ON storage.objects FOR SELECT USING (bucket_id = '${BUCKET_NAME}');`;
+
+  const copySqlScript = () => {
+    navigator.clipboard.writeText(sqlScript);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 3000);
+  };
+
+  const isCloudConnected = isSupabaseConfigured();
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-md animate-fadeIn overflow-y-auto">
       <div className="relative w-full max-w-4xl bg-white dark:bg-slate-800 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-700 my-8 overflow-hidden">
@@ -139,11 +311,23 @@ export const AdminDashboard = ({
               <Shield size={22} />
             </div>
             <div>
-              <h2 className="text-xl font-bold text-white">
-                Trang Quản Trị Hệ Thống (Admin Panel)
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold text-white">
+                  Trang Quản Trị Hệ Thống (Admin Panel)
+                </h2>
+                {isCloudConnected ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Cloud Online
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    Local Only
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-400">
-                Tải lên CV (PDF), Phân tích file Bảng điểm Excel & Cập nhật Hồ sơ
+                Quản lý CV (PDF), Phân tích Bảng điểm Excel, Cập nhật Hồ sơ & Cấu hình Cloud Storage
               </p>
             </div>
           </div>
@@ -174,6 +358,24 @@ export const AdminDashboard = ({
           }`}>
             {statusMsg.type === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
             <span>{statusMsg.text}</span>
+          </div>
+        )}
+
+        {/* Cloud Notification Warning Banner if not configured */}
+        {!isCloudConnected && (
+          <div className="mx-6 mt-4 p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 flex items-center justify-between gap-3 text-xs text-amber-800 dark:text-amber-300">
+            <div className="flex items-center gap-2">
+              <Cloud size={18} className="text-amber-600 shrink-0" />
+              <span>
+                <strong>Lưu ý:</strong> Chưa bật Cloud Storage! Các thay đổi chỉ lưu trên thiết bị này. Nhấp vào tab <strong>"Cloud Storage (Supabase)"</strong> bên dưới để kết nối miễn phí trong 2 phút!
+              </span>
+            </div>
+            <button
+              onClick={() => setActiveTab('cloud')}
+              className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold shrink-0 shadow-sm"
+            >
+              Cấu hình ngay
+            </button>
           </div>
         )}
 
@@ -216,6 +418,18 @@ export const AdminDashboard = ({
           </button>
 
           <button
+            onClick={() => setActiveTab('cloud')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-t-xl font-bold text-sm border-b-2 transition-all ${
+              activeTab === 'cloud'
+                ? 'border-cyan-600 text-cyan-600 dark:text-cyan-400 bg-cyan-50/50 dark:bg-cyan-900/20'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <Cloud size={18} />
+            <span>Cloud Storage (Supabase)</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('security')}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-t-xl font-bold text-sm border-b-2 transition-all ${
               activeTab === 'security'
@@ -239,7 +453,7 @@ export const AdminDashboard = ({
                   Quản lý File PDF CV
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Tải lên file PDF CV của bạn để người xem có thể đọc trực tiếp và tải bản gốc.
+                  Tải lên file PDF CV của bạn. {isCloudConnected ? 'File được tự động đẩy lên Cloud Storage để người xem trên mọi thiết bị đều đọc được bản mới nhất.' : 'Tải file để hiển thị trực tiếp.'}
                 </p>
               </div>
 
@@ -257,6 +471,9 @@ export const AdminDashboard = ({
                       <p className="text-xs text-slate-500 dark:text-slate-400">
                         Kích thước: {(cvMeta.size / 1024).toFixed(1)} KB • Ngày upload: {new Date(cvMeta.updatedAt).toLocaleString('vi-VN')}
                       </p>
+                      <span className="inline-block mt-1 text-[11px] font-mono text-blue-600 dark:text-blue-400 truncate max-w-xs sm:max-w-md">
+                        URL: {cvMeta.dataUrl?.slice(0, 60)}...
+                      </span>
                     </div>
                   </div>
 
@@ -275,23 +492,26 @@ export const AdminDashboard = ({
               )}
 
               {/* Upload Dropzone */}
-              <div className="border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-blue-500 dark:hover:border-blue-400 rounded-2xl p-8 text-center bg-slate-50 dark:bg-slate-700/30 transition-all cursor-pointer relative">
+              <div className={`border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-blue-500 dark:hover:border-blue-400 rounded-2xl p-8 text-center bg-slate-50 dark:bg-slate-700/30 transition-all relative ${
+                isUploadingPdf ? 'opacity-60 pointer-events-none' : 'cursor-pointer'
+              }`}>
                 <input
                   type="file"
                   accept="application/pdf"
+                  disabled={isUploadingPdf}
                   onChange={(e) => e.target.files && handlePdfUpload(e.target.files[0])}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
                 <div className="flex flex-col items-center gap-3">
                   <div className="p-4 rounded-2xl bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400">
-                    <UploadCloud size={32} />
+                    {isUploadingPdf ? <RefreshCw size={32} className="animate-spin" /> : <UploadCloud size={32} />}
                   </div>
                   <div>
                     <span className="font-bold text-slate-800 dark:text-slate-200 text-sm">
-                      Nhấp vào đây hoặc Kéo thả file PDF CV vào đây
+                      {isUploadingPdf ? 'Đang tải file CV lên Cloud Storage...' : 'Nhấp vào đây hoặc Kéo thả file PDF CV vào đây'}
                     </span>
                     <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
-                      Hỗ trợ định dạng file PDF (.pdf)
+                      Hỗ trợ định dạng file PDF (.pdf) • {isCloudConnected ? 'Đồng bộ Cloud Online' : 'Bộ nhớ địa phương'}
                     </p>
                   </div>
                 </div>
@@ -370,10 +590,12 @@ export const AdminDashboard = ({
                       <span>Đã trích xuất xong dữ liệu Excel!</span>
                     </div>
                     <button
+                      disabled={isSavingExcel}
                       onClick={handleSaveExcelData}
-                      className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition-all"
+                      className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs shadow-md transition-all flex items-center gap-2"
                     >
-                      Xác nhận Cập nhật Bảng điểm
+                      {isSavingExcel && <RefreshCw size={14} className="animate-spin" />}
+                      <span>Xác nhận Cập nhật Bảng điểm</span>
                     </button>
                   </div>
 
@@ -402,74 +624,219 @@ export const AdminDashboard = ({
 
           {/* TAB 3: EDIT PROFILE INFO */}
           {activeTab === 'profile' && (
-            <form onSubmit={handleSaveProfile} className="space-y-4">
-              <h3 className="text-lg font-bold text-slate-900 dark:text-white">
-                Chỉnh sửa Thông tin Cá nhân
-              </h3>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <form onSubmit={handleSaveProfile} className="space-y-6">
+              <div className="flex items-center justify-between">
                 <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Họ và tên</label>
-                  <input
-                    type="text"
-                    value={profileForm.fullName}
-                    onChange={(e) => setProfileForm({ ...profileForm, fullName: e.target.value })}
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Chức danh / Role</label>
-                  <input
-                    type="text"
-                    value={profileForm.title}
-                    onChange={(e) => setProfileForm({ ...profileForm, title: e.target.value })}
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Trường Đại học</label>
-                  <input
-                    type="text"
-                    value={profileForm.university}
-                    onChange={(e) => setProfileForm({ ...profileForm, university: e.target.value })}
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Chuyên ngành</label>
-                  <input
-                    type="text"
-                    value={profileForm.major}
-                    onChange={(e) => setProfileForm({ ...profileForm, major: e.target.value })}
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Email</label>
-                  <input
-                    type="email"
-                    value={profileForm.email}
-                    onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Đường dẫn / Link Ảnh Đại Diện (Avatar)</label>
-                  <input
-                    type="text"
-                    placeholder="/avatar.png hoặc link URL ảnh"
-                    value={profileForm.avatar || ''}
-                    onChange={(e) => setProfileForm({ ...profileForm, avatar: e.target.value })}
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
-                  />
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                    Chỉnh sửa Thông tin Cá nhân & Ảnh Bìa
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Cập nhật hình ảnh đại diện, ảnh bìa banner và các thông tin liên hệ của bạn.
+                  </p>
                 </div>
               </div>
 
+              {/* Cover Image & Avatar Section */}
+              <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-700/30 border border-slate-200 dark:border-slate-700 space-y-4">
+                <h4 className="font-bold text-slate-800 dark:text-slate-200 text-sm">
+                  1. Hình ảnh Profile (Ảnh bìa & Avatar)
+                </h4>
+
+                {/* Cover Image Upload */}
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block">
+                    Ảnh Bìa Banner (Cover Image)
+                  </label>
+                  {profileForm.coverImage && (
+                    <div className="h-28 w-full rounded-xl overflow-hidden relative border border-slate-300 dark:border-slate-600">
+                      <img src={profileForm.coverImage} alt="Cover Preview" className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setProfileForm({ ...profileForm, coverImage: '' })}
+                        className="absolute top-2 right-2 p-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 text-xs shadow-md"
+                      >
+                        Xóa ảnh bìa
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Dán URL ảnh bìa online (ví dụ: https://images.unsplash.com/...)"
+                      value={profileForm.coverImage || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, coverImage: e.target.value })}
+                      className="flex-1 px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-xs"
+                    />
+                    <label className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs cursor-pointer shrink-0 transition-colors flex items-center gap-1.5">
+                      <UploadCloud size={15} />
+                      <span>Tải ảnh từ máy</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => e.target.files && handleImageUpload(e.target.files[0], 'coverImage')}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {/* Avatar Upload */}
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block">
+                    Ảnh Đại Diện (Avatar)
+                  </label>
+                  <div className="flex items-center gap-4">
+                    <img
+                      src={profileForm.avatar || "/avatar.png"}
+                      alt="Avatar Preview"
+                      className="w-16 h-16 rounded-xl object-cover border-2 border-blue-500 shadow-sm shrink-0"
+                    />
+                    <div className="flex-1 space-y-2">
+                      <input
+                        type="text"
+                        placeholder="Link Avatar (ví dụ: /avatar.png hoặc URL ảnh online)"
+                        value={profileForm.avatar || ''}
+                        onChange={(e) => setProfileForm({ ...profileForm, avatar: e.target.value })}
+                        className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-xs"
+                      />
+                      <label className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs cursor-pointer transition-colors">
+                        <UploadCloud size={14} />
+                        <span>Tải Avatar mới từ máy</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => e.target.files && handleImageUpload(e.target.files[0], 'avatar')}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Personal Details Form */}
+              <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-700/30 border border-slate-200 dark:border-slate-700 space-y-4">
+                <h4 className="font-bold text-slate-800 dark:text-slate-200 text-sm">
+                  2. Thông tin Cá nhân & Học vấn
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Họ và tên</label>
+                    <input
+                      type="text"
+                      value={profileForm.fullName || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, fullName: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Chức danh / Role</label>
+                    <input
+                      type="text"
+                      value={profileForm.title || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, title: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Trường Đại học</label>
+                    <input
+                      type="text"
+                      value={profileForm.university || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, university: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Chuyên ngành</label>
+                    <input
+                      type="text"
+                      value={profileForm.major || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, major: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Mã Sinh Viên</label>
+                    <input
+                      type="text"
+                      value={profileForm.studentId || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, studentId: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Địa chỉ / Thành phố</label>
+                    <input
+                      type="text"
+                      value={profileForm.location || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, location: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Email liên hệ</label>
+                    <input
+                      type="email"
+                      value={profileForm.email || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Số điện thoại</label>
+                    <input
+                      type="text"
+                      value={profileForm.phone || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Social Links */}
+              <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-700/30 border border-slate-200 dark:border-slate-700 space-y-4">
+                <h4 className="font-bold text-slate-800 dark:text-slate-200 text-sm">
+                  3. Link Mạng xã hội & Code
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Link GitHub</label>
+                    <input
+                      type="url"
+                      value={profileForm.github || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, github: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Link LinkedIn</label>
+                    <input
+                      type="url"
+                      value={profileForm.linkedin || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, linkedin: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Link Facebook</label>
+                    <input
+                      type="url"
+                      value={profileForm.facebook || ''}
+                      onChange={(e) => setProfileForm({ ...profileForm, facebook: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Bio Description */}
               <div>
-                <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">Mô tả bản thân (Bio)</label>
+                <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block mb-1">Mô tả bản thân (Bio)</label>
                 <textarea
-                  rows={3}
-                  value={profileForm.bio}
+                  rows={4}
+                  value={profileForm.bio || ''}
                   onChange={(e) => setProfileForm({ ...profileForm, bio: e.target.value })}
                   className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm"
                 />
@@ -477,14 +844,166 @@ export const AdminDashboard = ({
 
               <button
                 type="submit"
-                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm shadow-md transition-all"
+                disabled={isSavingProfile}
+                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-sm shadow-md transition-all flex items-center gap-2"
               >
-                Lưu Thay Đổi Thông Tin
+                {isSavingProfile && <RefreshCw size={16} className="animate-spin" />}
+                <span>Lưu Thay Đổi Thông Tin Hồ Sơ</span>
               </button>
             </form>
           )}
 
-          {/* TAB 4: CHANGE PASSWORD */}
+          {/* TAB 4: CLOUD STORAGE CONFIGURATION (SUPABASE) */}
+          {activeTab === 'cloud' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Cloud className="text-cyan-500" size={22} />
+                    <span>Cấu hình Cloud Storage (Supabase Free)</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Lưu trữ file CV & dữ liệu Bảng điểm trên Cloud để tất cả thiết bị trên toàn thế giới luôn nhận thông tin mới nhất.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <a
+                    href="https://supabase.com"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 border border-emerald-200 text-xs font-semibold hover:bg-emerald-100 transition-colors"
+                  >
+                    <span>Mở Supabase.com</span>
+                    <ExternalLink size={14} />
+                  </a>
+                </div>
+              </div>
+
+              {/* Status Banner */}
+              <div className={`p-4 rounded-2xl border flex items-center justify-between ${
+                isCloudConnected
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+                  : 'bg-slate-50 dark:bg-slate-700/40 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+              }`}>
+                <div className="flex items-center gap-3">
+                  <div className={`p-2.5 rounded-xl ${isCloudConnected ? 'bg-emerald-500 text-white' : 'bg-slate-300 dark:bg-slate-600 text-slate-600 dark:text-slate-300'}`}>
+                    <Cloud size={24} />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-sm">
+                      Trạng thái Cloud Storage: {isCloudConnected ? '🟢 Đã Kết Nối Online' : '🔴 Chưa Kết Nối'}
+                    </h4>
+                    <p className="text-xs opacity-80">
+                      {isCloudConnected
+                        ? `Đang sử dụng ${cloudConfig.isEnv ? 'Biến môi trường (.env)' : 'Cấu hình Admin'}`
+                        : 'Web đang dùng bộ nhớ tạm local. Kết nối Supabase để nhận đồng bộ tất cả các thiết bị.'}
+                    </p>
+                  </div>
+                </div>
+
+                {isCloudConnected && !cloudConfig.isEnv && (
+                  <button
+                    onClick={handleClearCloudConfig}
+                    className="px-3 py-1.5 rounded-xl bg-rose-100 dark:bg-rose-900/40 text-rose-600 text-xs font-semibold hover:bg-rose-200"
+                  >
+                    Ngắt kết nối
+                  </button>
+                )}
+              </div>
+
+              {/* Config Form */}
+              <form onSubmit={handleSaveCloudConfig} className="p-6 rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-4">
+                <h4 className="font-bold text-slate-900 dark:text-white text-sm">
+                  Thông số kết nối API (Project Settings -&gt; API)
+                </h4>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                      Supabase Project URL
+                    </label>
+                    <input
+                      type="url"
+                      required
+                      placeholder="https://your-project-id.supabase.co"
+                      value={cloudConfig.url}
+                      onChange={(e) => setCloudConfig({ ...cloudConfig, url: e.target.value })}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                      Supabase Anon Public Key
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      value={cloudConfig.key}
+                      onChange={(e) => setCloudConfig({ ...cloudConfig, key: e.target.value })}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 pt-2">
+                  <button
+                    type="submit"
+                    disabled={testingCloud}
+                    className="px-6 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-bold text-xs shadow-md transition-all flex items-center gap-2"
+                  >
+                    {testingCloud && <RefreshCw size={14} className="animate-spin" />}
+                    <span>Lưu & Kết Nối Cloud Storage</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={testingCloud}
+                    onClick={handleTestCloudConnection}
+                    className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 text-slate-700 dark:text-slate-200 font-bold text-xs border border-slate-200 dark:border-slate-600 transition-all"
+                  >
+                    Kiểm Tra Kết Nối
+                  </button>
+                </div>
+              </form>
+
+              {/* Guide & SQL Copy Box */}
+              <div className="p-6 rounded-2xl bg-slate-900 text-slate-200 border border-slate-800 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                    <span className="w-6 h-6 rounded-full bg-cyan-500 text-slate-950 flex items-center justify-center text-xs font-extrabold">!</span>
+                    Hướng dẫn tạo Bảng & Bucket trên Supabase (Thực hiện 1 lần duy nhất trong 2 phút)
+                  </h4>
+                  <button
+                    onClick={copySqlScript}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-semibold border border-slate-700 transition-colors"
+                  >
+                    {copiedSql ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                    <span>{copiedSql ? 'Đã copy SQL!' : 'Copy mã SQL'}</span>
+                  </button>
+                </div>
+
+                <ol className="list-decimal list-inside space-y-2 text-xs text-slate-300 leading-relaxed">
+                  <li>Truy cập <a href="https://supabase.com" target="_blank" rel="noreferrer" className="text-cyan-400 underline font-bold">Supabase.com</a>, tạo dự án mới (miễn phí 100%).</li>
+                  <li>Vào mục <strong>SQL Editor</strong> ở menu bên trái, dán đoạn mã SQL bên dưới rồi bấm <strong>Run</strong>:</li>
+                </ol>
+
+                <pre className="p-4 rounded-xl bg-slate-950 text-cyan-300 text-xs font-mono overflow-x-auto border border-slate-800">
+                  {sqlScript}
+                </pre>
+
+                <ol start={3} className="list-decimal list-inside space-y-2 text-xs text-slate-300 leading-relaxed">
+                  <li>Vào mục <strong>Storage</strong> ở menu bên trái -&gt; Bấm <strong>Create a new bucket</strong>.</li>
+                  <li>Đặt tên Bucket là: <code className="bg-slate-800 text-emerald-400 px-1.5 py-0.5 rounded font-mono font-bold">{BUCKET_NAME}</code> và bật công tắc <strong>Public bucket</strong> thành <strong>ON</strong>.</li>
+                  <li>Vào <strong>Project Settings</strong> -&gt; <strong>API</strong> -&gt; Copy <strong>URL</strong> và <strong>anon public key</strong> dán vào ô bên trên rồi bấm "Lưu & Kết Nối"!</li>
+                </ol>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 5: CHANGE PASSWORD */}
           {activeTab === 'security' && (
             <form onSubmit={handleChangePassword} className="space-y-4 max-w-md">
               <h3 className="text-lg font-bold text-slate-900 dark:text-white">
@@ -520,3 +1039,5 @@ export const AdminDashboard = ({
     </div>
   );
 };
+
+export default AdminDashboard;

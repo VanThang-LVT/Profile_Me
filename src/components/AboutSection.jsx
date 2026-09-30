@@ -5,13 +5,29 @@ export const AboutSection = ({ profile, transcriptData, onNavigate }) => {
   return (
     <div className="space-y-8 animate-fadeIn">
       {/* Hero Profile Card */}
-      <div className="relative overflow-hidden rounded-3xl bg-white dark:bg-slate-800 text-slate-900 dark:text-white p-8 md:p-12 shadow-xl border border-slate-200/80 dark:border-slate-700">
+      <div className="relative overflow-hidden rounded-3xl bg-white dark:bg-slate-800 text-slate-900 dark:text-white p-6 md:p-10 shadow-xl border border-slate-200/80 dark:border-slate-700">
+        
+        {/* Optional Cover Banner Image */}
+        {profile.coverImage && (
+          <div className="h-48 md:h-64 w-full -mt-6 -mx-6 md:-mt-10 md:-mx-10 mb-8 overflow-hidden relative border-b border-slate-200 dark:border-slate-700">
+            <img
+              src={profile.coverImage}
+              alt="Cover Banner"
+              className="w-full h-full object-cover"
+              onError={(e) => {
+                e.target.style.display = 'none';
+              }}
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-slate-900/70 via-slate-900/20 to-transparent"></div>
+          </div>
+        )}
+
         <div className="absolute top-0 right-0 -mt-12 -mr-12 w-96 h-96 bg-blue-500/5 dark:bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
         <div className="absolute bottom-0 left-0 -mb-12 -ml-12 w-96 h-96 bg-indigo-500/5 dark:bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
 
         <div className="relative z-10 flex flex-col md:flex-row items-center gap-8">
           {/* Avatar Image */}
-          <div className="shrink-0">
+          <div className="shrink-0 relative">
             <img
               src={profile.avatar || "/avatar.png"}
               alt={profile.fullName}
@@ -19,7 +35,7 @@ export const AboutSection = ({ profile, transcriptData, onNavigate }) => {
                 e.target.onerror = null;
                 e.target.src = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=600";
               }}
-              className="w-48 aspect-[3/4] md:w-56 lg:w-60 rounded-2xl object-cover border border-slate-200/80 dark:border-slate-700 shadow-md"
+              className="w-48 aspect-[3/4] md:w-56 lg:w-60 rounded-2xl object-cover border-4 border-white dark:border-slate-800 shadow-xl"
             />
           </div>
 

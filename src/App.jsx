@@ -10,8 +10,9 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { Footer } from './components/Footer';
 
 import { initialProfileInfo, initialTranscriptData } from './data/defaultData';
-import { loadProfileInfo, loadTranscriptData, loadCvPdf } from './utils/storage';
+import { loadProfileInfo, loadTranscriptData, loadCvPdf, saveProfileInfo, saveTranscriptData } from './utils/storage';
 import { checkAdminAuth, logoutAdmin } from './utils/auth';
+import { isSupabaseConfigured, fetchCloudDataKey } from './utils/supabaseClient';
 
 export function App() {
   const navigate = useNavigate();
@@ -24,6 +25,38 @@ export function App() {
 
   // Admin Auth States
   const [isAdmin, setIsAdmin] = useState(() => checkAdminAuth());
+
+  // Sync Cloud Data (Supabase) across all devices
+  useEffect(() => {
+    const fetchCloudAll = async () => {
+      if (!isSupabaseConfigured()) return;
+      try {
+        // Fetch Profile Info
+        const cloudProfile = await fetchCloudDataKey('profile_info');
+        if (cloudProfile && typeof cloudProfile === 'object') {
+          setProfile(cloudProfile);
+          saveProfileInfo(cloudProfile);
+        }
+
+        // Fetch Transcript Data
+        const cloudTranscript = await fetchCloudDataKey('transcript_data');
+        if (cloudTranscript && typeof cloudTranscript === 'object') {
+          setTranscriptData(cloudTranscript);
+          saveTranscriptData(cloudTranscript);
+        }
+
+        // Fetch CV PDF Metadata
+        const cloudCvMeta = await fetchCloudDataKey('cv_pdf');
+        if (cloudCvMeta && typeof cloudCvMeta === 'object') {
+          setCvMeta(cloudCvMeta);
+        }
+      } catch (err) {
+        console.warn("Lỗi đồng bộ Cloud Data:", err);
+      }
+    };
+
+    fetchCloudAll();
+  }, []);
 
   // Sync Dark Mode class on html tag
   useEffect(() => {
